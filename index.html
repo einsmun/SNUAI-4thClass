@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>테트리스</title>
+<style>
+  body { background: #1a1a2e; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; font-family: monospace; }
+  canvas { border: 2px solid #444; }
+  #side { color: #eee; margin-left: 24px; min-width: 100px; }
+  #side h2 { margin: 0 0 16px; color: #7fd8ff; }
+  .label { color: #aaa; font-size: 13px; margin-top: 12px; }
+  .value { font-size: 22px; font-weight: bold; }
+  #next-canvas { margin-top: 6px; }
+  #keys { margin-top: 24px; color: #888; font-size: 13px; line-height: 1.8; }
+  #overlay { position: absolute; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff; display: none; }
+  #overlay h1 { color: #ff6b6b; margin-bottom: 8px; }
+  #overlay p { color: #aaa; }
+</style>
+</head>
+<body>
+<div style="position:relative; display:flex; align-items:flex-start;">
+  <canvas id="board"></canvas>
+  <div id="overlay">
+    <h1>게임 오버</h1>
+    <p id="final-score"></p>
+    <p style="color:#7fd8ff; cursor:pointer;" onclick="startGame()">▶ 다시 시작</p>
+  </div>
+  <div id="side">
+    <h2>테트리스</h2>
+    <div class="label">점수</div>
+    <div class="value" id="score">0</div>
+    <div class="label">레벨</div>
+    <div class="value" id="level">1</div>
+    <div class="label">NEXT</div>
+    <canvas id="next-canvas" width="80" height="80"></canvas>
+    <div id="keys">
+      ← → 이동<br>
+      ↑ 회전<br>
+      ↓ 빠르게<br>
+      Space 즉시 낙하
+    </div>
+  </div>
+</div>
+
+<script>
+const COLS = 10, ROWS = 20, BLOCK = 32;
+const COLORS = ['', '#00cfff','#ffd700','#cc44ff','#44dd44','#ff4444','#4466ff','#ff8800'];
+
+const PIECES = {
+  I: [[[0,1],[1,1],[2,1],[3,1]], [[2,0],[2,1],[2,2],[2,3]]],
+  O: [[[1,0],[2,0],[1,1],[2,1]]],
+  T: [[[0,1],[1,1],[2,1],[1,0]], [[1,0],[1,1],[1,2],[2,1]], [[0,1],[1,1],[2,1],[1,2]], [[1,0],[1,1],[1,2],[0,1]]],
+  S: [[[1,0],[2,0],[0,1],[1,1]], [[1,0],[1,1],[2,1],[2,2]]],
+  Z: [[[0,0],[1,0],[1,1],[2,1]], [[2,0],[1,1],[2,1],[1,2]]],
+  J: [[[0,0],[0,1],[1,1],[2,1]], [[1,0],[2,0],[1,1],[1,2]], [[0,1],[1,1],[2,1],[2,2]], [[1,0],[1,1],[0,2],[1,2]]],
+  L: [[[2,0],[0,1],[1,1],[2,1]], [[1,0],[1,1],[1,2],[2,2]], [[0,1],[1,1],[2,1],[0,2]], [[0,0],[1,0],[1,1],[1,2]]],
+};
+const PIECE_KEYS = Object.keys(PIECES);
+const PIECE_COLOR = {I:1, O:2, T:3, S:4, Z:5, J:6, L:7};
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+canvas.width = COLS * BLOCK;
+canvas.height = ROWS * BLOCK;
+
+const nextCanvas = document.getElementById('next-canvas');
+const nctx = nextCanvas.getContext('2d');
+
+let board, piece, nextPiece, score, level, linesTotal, dropInterval, lastTime, animId;
+
+function newPiece() {
+  const key = PIECE_KEYS[Math.floor(Math.random() * PIECE_KEYS.length)];
+  return { key, rot: 0, x: 3, y: 0 };
+}
+
+function cells(p) {
+  const rots = PIECES[p.key];
+  return rots[p.rot % rots.length].map(([dx, dy]) => [p.x + dx, p.y + dy]);
+}
+
+function valid(p) {
+  return cells(p).every(([x, y]) => x >= 0 && x < COLS && y < ROWS && (y < 0 || !board[y][x]));
+}
+
+function place() {
+  cells(piece).forEach(([x, y]) => { if (y >= 0) board[y][x] = PIECE_COLOR[piece.key]; });
+}
+
+function clearLines() {
+  const kept = board.filter(row => row.some(c => c === 0));
+  const n = ROWS - kept.length;
+  board = [...Array(n).fill(null).map(() => Array(COLS).fill(0)), ...kept];
+  return n;
+}
+
+function drawBlock(c, x, y, size = BLOCK, context = ctx) {
+  context.fillStyle = COLORS[c];
+  context.fillRect(x * size + 1, y * size + 1, size - 2, size - 2);
+  context.fillStyle = 'rgba(255,255,255,0.15)';
+  context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
+}
+
+function draw() {
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // 그리드
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  for (let x = 0; x < COLS; x++) { ctx.beginPath(); ctx.moveTo(x * BLOCK, 0); ctx.lineTo(x * BLOCK, canvas.height); ctx.stroke(); }
+  for (let y = 0; y < ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y * BLOCK); ctx.lineTo(canvas.width, y * BLOCK); ctx.stroke(); }
+
+  board.forEach((row, y) => row.forEach((c, x) => { if (c) drawBlock(c, x, y); }));
+
+  // 고스트
+  let ghost = { ...piece };
+  while (valid({ ...ghost, y: ghost.y + 1 })) ghost.y++;
+  cells(ghost).forEach(([x, y]) => {
+    if (y >= 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      ctx.fillRect(x * BLOCK + 1, y * BLOCK + 1, BLOCK - 2, BLOCK - 2);
+    }
+  });
+
+  cells(piece).forEach(([x, y]) => { if (y >= 0) drawBlock(PIECE_COLOR[piece.key], x, y); });
+}
+
+function drawNext() {
+  nctx.fillStyle = '#0d0d1a';
+  nctx.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+  const size = 16;
+  PIECES[nextPiece.key][0].forEach(([dx, dy]) => {
+    nctx.fillStyle = COLORS[PIECE_COLOR[nextPiece.key]];
+    nctx.fillRect(dx * size + 8, dy * size + 8, size - 2, size - 2);
+  });
+}
+
+function gameLoop(ts) {
+  if (!lastTime) lastTime = ts;
+  if (ts - lastTime > dropInterval) {
+    const moved = { ...piece, y: piece.y + 1 };
+    if (valid(moved)) {
+      piece = moved;
+    } else {
+      place();
+      const n = clearLines();
+      linesTotal += n;
+      score += [0, 100, 300, 500, 800][Math.min(n, 4)];
+      level = Math.floor(linesTotal / 10) + 1;
+      dropInterval = Math.max(100, 800 - (level - 1) * 70);
+      document.getElementById('score').textContent = score;
+      document.getElementById('level').textContent = level;
+      piece = nextPiece;
+      nextPiece = newPiece();
+      drawNext();
+      if (!valid(piece)) { gameOver(); return; }
+    }
+    lastTime = ts;
+  }
+  draw();
+  animId = requestAnimationFrame(gameLoop);
+}
+
+function gameOver() {
+  const overlay = document.getElementById('overlay');
+  overlay.style.display = 'flex';
+  overlay.style.width = canvas.width + 'px';
+  overlay.style.height = canvas.height + 'px';
+  document.getElementById('final-score').textContent = `최종 점수: ${score}`;
+}
+
+function startGame() {
+  if (animId) cancelAnimationFrame(animId);
+  board = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+  score = 0; level = 1; linesTotal = 0; dropInterval = 800; lastTime = 0;
+  piece = newPiece();
+  nextPiece = newPiece();
+  document.getElementById('score').textContent = 0;
+  document.getElementById('level').textContent = 1;
+  document.getElementById('overlay').style.display = 'none';
+  drawNext();
+  animId = requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', e => {
+  if (!piece) return;
+  if (e.key === 'ArrowLeft')  { const m = {...piece, x: piece.x - 1}; if (valid(m)) piece = m; }
+  if (e.key === 'ArrowRight') { const m = {...piece, x: piece.x + 1}; if (valid(m)) piece = m; }
+  if (e.key === 'ArrowDown')  { const m = {...piece, y: piece.y + 1}; if (valid(m)) piece = m; }
+  if (e.key === 'ArrowUp')    { const m = {...piece, rot: piece.rot + 1}; if (valid(m)) piece = m; }
+  if (e.key === ' ') {
+    e.preventDefault();
+    while (valid({ ...piece, y: piece.y + 1 })) piece = { ...piece, y: piece.y + 1 };
+  }
+});
+
+startGame();
+</script>
+</body>
+</html>
